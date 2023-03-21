@@ -8,7 +8,16 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from types import MethodType
-from typing import TYPE_CHECKING, Any, DefaultDict, Literal, Optional, Union, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    DefaultDict,
+    Literal,
+    Optional,
+    Union,
+    cast,
+    overload,
+)
 
 import gevent
 
@@ -30,6 +39,7 @@ from rotkehlchen.chain.ethereum.manager import EthereumManager
 from rotkehlchen.chain.ethereum.node_inquirer import EthereumInquirer
 from rotkehlchen.chain.ethereum.oracles.saddle import SaddleOracle
 from rotkehlchen.chain.ethereum.oracles.uniswap import UniswapV2Oracle, UniswapV3Oracle
+from rotkehlchen.chain.ethereum.oracles.ypricemagic import YPriceMagicOracle
 from rotkehlchen.chain.evm.accounting.aggregator import EVMAccountingAggregators
 from rotkehlchen.chain.evm.nodes import populate_rpc_nodes_in_database
 from rotkehlchen.chain.optimism.accountant import OptimismAccountingAggregator
@@ -73,7 +83,11 @@ from rotkehlchen.history.types import HistoricalPriceOracle
 from rotkehlchen.icons import IconManager
 from rotkehlchen.inquirer import Inquirer
 from rotkehlchen.logging import RotkehlchenLogsAdapter
-from rotkehlchen.premium.premium import Premium, PremiumCredentials, premium_create_and_verify
+from rotkehlchen.premium.premium import (
+    Premium,
+    PremiumCredentials,
+    premium_create_and_verify,
+)
 from rotkehlchen.premium.sync import PremiumSyncManager
 from rotkehlchen.tasks.manager import DEFAULT_MAX_TASKS_NUM, TaskManager
 from rotkehlchen.types import (
@@ -112,7 +126,7 @@ ICONS_BATCH_SIZE = 3
 ICONS_QUERY_SLEEP = 60
 
 
-class Rotkehlchen():
+class Rotkehlchen:
     def __init__(self, args: argparse.Namespace) -> None:
         """Initialize the Rotkehlchen object
 
@@ -137,7 +151,7 @@ class Rotkehlchen():
 
         if not os.access(self.data_dir, os.W_OK | os.R_OK):
             raise SystemPermissionError(
-                f'The given data directory {self.data_dir} is not readable or writable',
+                f"The given data directory {self.data_dir} is not readable or writable",
             )
         self.main_loop_spawned = False
         self.api_task_greenlets: list[gevent.Greenlet] = []
@@ -153,8 +167,8 @@ class Rotkehlchen():
         )
         if globaldb.used_backup is True:
             self.msg_aggregator.add_warning(
-                'Your global database was left in an half-upgraded state. '
-                'Restored from the latest backup we could find',
+                "Your global database was left in an half-upgraded state. "
+                "Restored from the latest backup we could find",
             )
         self.data = DataHandler(
             self.data_dir,
@@ -164,7 +178,9 @@ class Rotkehlchen():
         self.cryptocompare = Cryptocompare(data_directory=self.data_dir, database=None)
         self.coingecko = Coingecko()
         self.defillama = Defillama()
-        self.icon_manager = IconManager(data_dir=self.data_dir, coingecko=self.coingecko)
+        self.icon_manager = IconManager(
+            data_dir=self.data_dir, coingecko=self.coingecko
+        )
         self.assets_updater = AssetsUpdater(self.msg_aggregator)
         # Initialize the Inquirer singleton
         Inquirer(
@@ -180,33 +196,46 @@ class Rotkehlchen():
         self.migration_manager = DataMigrationManager(self)
 
     def maybe_kill_running_tx_query_tasks(
-            self,
-            blockchain: SupportedBlockchain,
-            addresses: list[ChecksumEvmAddress],
+        self,
+        blockchain: SupportedBlockchain,
+        addresses: list[ChecksumEvmAddress],
     ) -> None:
         """Checks for running greenlets related to transactions query for the given
         addresses and kills them if they exist"""
-        assert self.task_manager is not None, 'task manager should have been initialized at this point'  # noqa: E501
+        assert (
+            self.task_manager is not None
+        ), "task manager should have been initialized at this point"  # noqa: E501
 
         for address in addresses:
             account_tuple = (address, blockchain.to_chain_id())
             for greenlet in self.api_task_greenlets:
                 is_evm_tx_greenlet = (
-                    len(greenlet.args) >= 1 and
-                    isinstance(greenlet.args[0], MethodType) and
-                    greenlet.args[0].__func__.__qualname__ == 'RestAPI._get_evm_transactions'
+                    len(greenlet.args) >= 1
+                    and isinstance(greenlet.args[0], MethodType)
+                    and greenlet.args[0].__func__.__qualname__
+                    == "RestAPI._get_evm_transactions"
                 )
                 if (
-                        is_evm_tx_greenlet and
-                        greenlet.kwargs['only_cache'] is False and
-                        account_tuple in greenlet.kwargs['filter_query'].accounts
+                    is_evm_tx_greenlet
+                    and greenlet.kwargs["only_cache"] is False
+                    and account_tuple in greenlet.kwargs["filter_query"].accounts
                 ):
-                    greenlet.kill(exception=GreenletKilledError('Killed due to request for evm address removal'))  # noqa: E501
+                    greenlet.kill(
+                        exception=GreenletKilledError(
+                            "Killed due to request for evm address removal"
+                        )
+                    )  # noqa: E501
 
-            tx_query_task_greenlets = self.task_manager.running_greenlets.get(self.task_manager._maybe_query_evm_transactions, [])  # noqa: E501
+            tx_query_task_greenlets = self.task_manager.running_greenlets.get(
+                self.task_manager._maybe_query_evm_transactions, []
+            )  # noqa: E501
             for greenlet in tx_query_task_greenlets:
-                if greenlet.kwargs['address'] in addresses:
-                    greenlet.kill(exception=GreenletKilledError('Killed due to request for evm address removal'))  # noqa: E501
+                if greenlet.kwargs["address"] in addresses:
+                    greenlet.kill(
+                        exception=GreenletKilledError(
+                            "Killed due to request for evm address removal"
+                        )
+                    )  # noqa: E501
 
     def reset_after_failed_account_creation_or_login(self) -> None:
         """If the account creation or login failed make sure that the rotki instance is clear
@@ -225,14 +254,14 @@ class Rotkehlchen():
             populate_rpc_nodes_in_database(write_cursor)
 
     def unlock_user(
-            self,
-            user: str,
-            password: str,
-            create_new: bool,
-            sync_approval: Literal['yes', 'no', 'unknown'],
-            premium_credentials: Optional[PremiumCredentials],
-            initial_settings: Optional[ModifiableDBSettings] = None,
-            sync_database: bool = True,
+        self,
+        user: str,
+        password: str,
+        create_new: bool,
+        sync_approval: Literal["yes", "no", "unknown"],
+        premium_credentials: Optional[PremiumCredentials],
+        initial_settings: Optional[ModifiableDBSettings] = None,
+        sync_database: bool = True,
     ) -> None:
         """Unlocks an existing user or creates a new one if `create_new` is True
 
@@ -249,7 +278,7 @@ class Rotkehlchen():
         - DBSchemaError if database schema is malformed.
         """
         log.info(
-            'Unlocking user',
+            "Unlocking user",
             user=user,
             create_new=create_new,
             sync_approval=sync_approval,
@@ -259,12 +288,14 @@ class Rotkehlchen():
 
         # unlock or create the DB
         self.password = password
-        self.user_directory = self.data.unlock(user, password, create_new, initial_settings)
+        self.user_directory = self.data.unlock(
+            user, password, create_new, initial_settings
+        )
         # Run the DB integrity check due to https://github.com/rotki/rotki/issues/3010
         # TODO: Hopefully once 3010 is handled this can go away
         self.greenlet_manager.spawn_and_track(
             after_seconds=None,
-            task_name='user DB data integrity check',
+            task_name="user DB data integrity check",
             exception_is_error=False,
             method=self.data.db.ensure_data_integrity,
         )
@@ -297,8 +328,8 @@ class Rotkehlchen():
             if create_new:
                 raise
             self.msg_aggregator.add_warning(
-                'Could not authenticate the rotki premium API keys found in the DB.'
-                ' Has your subscription expired?',
+                "Could not authenticate the rotki premium API keys found in the DB."
+                " Has your subscription expired?",
             )
             # else let's just continue. User signed in succesfully, but he just
             # has unauthenticable/invalid premium credentials remaining in his DB
@@ -307,13 +338,15 @@ class Rotkehlchen():
             settings = self.get_settings(cursor)
             self.greenlet_manager.spawn_and_track(
                 after_seconds=None,
-                task_name='submit_usage_analytics',
+                task_name="submit_usage_analytics",
                 exception_is_error=False,
                 method=maybe_submit_usage_analytics,
                 data_dir=self.data_dir,
                 should_submit=settings.submit_usage_analytics,
             )
-            self.beaconchain = BeaconChain(database=self.data.db, msg_aggregator=self.msg_aggregator)  # noqa: E501
+            self.beaconchain = BeaconChain(
+                database=self.data.db, msg_aggregator=self.msg_aggregator
+            )  # noqa: E501
             # Initialize the price historian singleton
             PriceHistorian(
                 data_directory=self.data_dir,
@@ -330,7 +363,9 @@ class Rotkehlchen():
             )
             blockchain_accounts = self.data.db.get_blockchain_accounts(cursor)
 
-        ethereum_nodes = self.data.db.get_rpc_nodes(blockchain=SupportedBlockchain.ETHEREUM, only_active=True)  # noqa: E501
+        ethereum_nodes = self.data.db.get_rpc_nodes(
+            blockchain=SupportedBlockchain.ETHEREUM, only_active=True
+        )  # noqa: E501
         # Initialize blockchain querying modules
         ethereum_inquirer = EthereumInquirer(
             greenlet_manager=self.greenlet_manager,
@@ -338,7 +373,9 @@ class Rotkehlchen():
             connect_at_start=ethereum_nodes,
         )
         ethereum_manager = EthereumManager(ethereum_inquirer)
-        optimism_nodes = self.data.db.get_rpc_nodes(blockchain=SupportedBlockchain.OPTIMISM, only_active=True)  # noqa: E501
+        optimism_nodes = self.data.db.get_rpc_nodes(
+            blockchain=SupportedBlockchain.OPTIMISM, only_active=True
+        )  # noqa: E501
         optimism_inquirer = OptimismInquirer(
             greenlet_manager=self.greenlet_manager,
             database=self.data.db,
@@ -364,10 +401,10 @@ class Rotkehlchen():
         self.covalent_avalanche = Covalent(
             database=self.data.db,
             msg_aggregator=self.msg_aggregator,
-            chain_id=chains_id['avalanche'],
+            chain_id=chains_id["avalanche"],
         )
         avalanche_manager = AvalancheManager(
-            avaxrpc_endpoint='https://api.avax.network/ext/bc/C/rpc',
+            avaxrpc_endpoint="https://api.avax.network/ext/bc/C/rpc",
             covalent=self.covalent_avalanche,
             msg_aggregator=self.msg_aggregator,
         )
@@ -376,10 +413,12 @@ class Rotkehlchen():
         uniswap_v2_oracle = UniswapV2Oracle(ethereum_inquirer)
         uniswap_v3_oracle = UniswapV3Oracle(ethereum_inquirer)
         saddle_oracle = SaddleOracle(ethereum_inquirer)
+        ypricemagic_oracle = YPriceMagicOracle(ethereum_inquirer)
         Inquirer().add_defi_oracles(
             uniswap_v2=uniswap_v2_oracle,
             uniswap_v3=uniswap_v3_oracle,
             saddle=saddle_oracle,
+            ypricemagic=ypricemagic_oracle,
         )
         Inquirer().set_oracles_order(settings.current_price_oracles)
 
@@ -400,12 +439,18 @@ class Rotkehlchen():
             btc_derivation_gap_limit=settings.btc_derivation_gap_limit,
         )
 
-        ethereum_accountant = EthereumAccountingAggregator(node_inquirer=ethereum_inquirer, msg_aggregator=self.msg_aggregator)  # noqa: E501
-        optimism_accountant = OptimismAccountingAggregator(node_inquirer=optimism_inquirer, msg_aggregator=self.msg_aggregator)  # noqa: E501
-        evm_accounting_aggregators = EVMAccountingAggregators(aggregators=[
-            ethereum_accountant,
-            optimism_accountant,
-        ])
+        ethereum_accountant = EthereumAccountingAggregator(
+            node_inquirer=ethereum_inquirer, msg_aggregator=self.msg_aggregator
+        )  # noqa: E501
+        optimism_accountant = OptimismAccountingAggregator(
+            node_inquirer=optimism_inquirer, msg_aggregator=self.msg_aggregator
+        )  # noqa: E501
+        evm_accounting_aggregators = EVMAccountingAggregators(
+            aggregators=[
+                ethereum_accountant,
+                optimism_accountant,
+            ]
+        )
         self.accountant = Accountant(
             db=self.data.db,
             msg_aggregator=self.msg_aggregator,
@@ -438,21 +483,21 @@ class Rotkehlchen():
         self.migration_manager.maybe_migrate_data()
         self.greenlet_manager.spawn_and_track(
             after_seconds=5,
-            task_name='periodically_query_icons_until_all_cached',
+            task_name="periodically_query_icons_until_all_cached",
             exception_is_error=False,
             method=self.icon_manager.periodically_query_icons_until_all_cached,
             batch_size=ICONS_BATCH_SIZE,
             sleep_time_secs=ICONS_QUERY_SLEEP,
         )
         self.user_is_logged_in = True
-        log.debug('User unlocking complete')
+        log.debug("User unlocking complete")
 
     def _logout(self) -> None:
         if not self.user_is_logged_in:
             return
         user = self.data.username
         log.info(
-            'Logging out user',
+            "Logging out user",
             user=user,
         )
 
@@ -466,7 +511,7 @@ class Rotkehlchen():
         del self.data_importer
 
         self.data.logout()
-        self.password = ''
+        self.password = ""
         self.cryptocompare.unset_database()
 
         # Make sure no messages leak to other user sessions
@@ -476,7 +521,7 @@ class Rotkehlchen():
 
         self.user_is_logged_in = False
         log.info(
-            'User successfully logged out',
+            "User successfully logged out",
             user=user,
         )
 
@@ -493,7 +538,7 @@ class Rotkehlchen():
 
         Raises PremiumAuthenticationError if the given key is rejected by the Rotkehlchen server
         """
-        log.info('Setting new premium credentials')
+        log.info("Setting new premium credentials")
         if self.premium is not None:
             self.premium.set_credentials(credentials)
         else:
@@ -524,16 +569,16 @@ class Rotkehlchen():
 
     def delete_premium_credentials(self) -> tuple[bool, str]:
         """Deletes the premium credentials for rotki"""
-        msg = ''
+        msg = ""
 
         success = self.data.db.delete_premium_credentials()
         if success is False:
-            msg = 'The database was unable to delete the Premium keys for the logged-in user'
+            msg = "The database was unable to delete the Premium keys for the logged-in user"
         self.deactivate_premium_status()
         return success, msg
 
     def start(self) -> gevent.Greenlet:
-        assert not self.main_loop_spawned, 'Tried to spawn the main loop twice'
+        assert not self.main_loop_spawned, "Tried to spawn the main loop twice"
         greenlet = gevent.spawn(self.main_loop)
         self.main_loop_spawned = True
         return greenlet
@@ -545,12 +590,15 @@ class Rotkehlchen():
                 self.task_manager.schedule()
 
     def get_blockchain_account_data(
-            self,
-            cursor: 'DBCursor',
-            blockchain: SupportedBlockchain,
+        self,
+        cursor: "DBCursor",
+        blockchain: SupportedBlockchain,
     ) -> Union[list[SingleBlockchainAccountData], dict[str, Any]]:
         account_data = self.data.db.get_blockchain_account_data(cursor, blockchain)
-        if blockchain not in (SupportedBlockchain.BITCOIN, SupportedBlockchain.BITCOIN_CASH):
+        if blockchain not in (
+            SupportedBlockchain.BITCOIN,
+            SupportedBlockchain.BITCOIN_CASH,
+        ):
             return account_data
 
         xpub_data = self.data.db.get_bitcoin_xpub_data(
@@ -564,29 +612,31 @@ class Rotkehlchen():
             addresses=list(addresses_to_account_data.keys()),
         )
 
-        xpub_mappings: dict['XpubData', list[SingleBlockchainAccountData]] = {}
+        xpub_mappings: dict["XpubData", list[SingleBlockchainAccountData]] = {}
         for address, xpub_entry in address_to_xpub_mappings.items():
             if xpub_entry not in xpub_mappings:
                 xpub_mappings[xpub_entry] = []
             xpub_mappings[xpub_entry].append(addresses_to_account_data[address])
 
-        data: dict[str, Any] = {'standalone': [], 'xpubs': []}
+        data: dict[str, Any] = {"standalone": [], "xpubs": []}
         # Add xpub data
         for xpub_entry in xpub_data:
             data_entry = xpub_entry.serialize()
             addresses = xpub_mappings.get(xpub_entry, None)
-            data_entry['addresses'] = addresses if addresses and len(addresses) != 0 else None
-            data['xpubs'].append(data_entry)
+            data_entry["addresses"] = (
+                addresses if addresses and len(addresses) != 0 else None
+            )
+            data["xpubs"].append(data_entry)
         # Add standalone addresses
         for account in account_data:
             if account.address not in address_to_xpub_mappings:
-                data['standalone'].append(account)
+                data["standalone"].append(account)
 
         return data
 
     def add_evm_accounts(
-            self,
-            account_data: list[SingleBlockchainAccountData[ChecksumEvmAddress]],
+        self,
+        account_data: list[SingleBlockchainAccountData[ChecksumEvmAddress]],
     ) -> list[tuple[SUPPORTED_EVM_CHAINS, ChecksumEvmAddress]]:
         """Adds each account for all evm addresses
 
@@ -602,13 +652,17 @@ class Rotkehlchen():
         - RemoteError if an external service such as Etherscan is queried and
           there is a problem with its query.
         """
-        account_data_map: dict[ChecksumEvmAddress, SingleBlockchainAccountData[ChecksumEvmAddress]] = {x.address: x for x in account_data}  # noqa: E501
+        account_data_map: dict[
+            ChecksumEvmAddress, SingleBlockchainAccountData[ChecksumEvmAddress]
+        ] = {
+            x.address: x for x in account_data
+        }  # noqa: E501
         with self.data.db.conn.read_ctx() as cursor:
             self.data.db.ensure_tags_exist(
                 cursor=cursor,
                 given_data=account_data,
-                action='adding',
-                data_type='blockchain accounts',
+                action="adding",
+                data_type="blockchain accounts",
             )
 
         added_accounts = self.chains_aggregator.add_accounts_to_all_evm(
@@ -626,40 +680,40 @@ class Rotkehlchen():
 
     @overload
     def add_single_blockchain_accounts(
-            self,
-            chain: SUPPORTED_EVM_CHAINS,
-            account_data: list[SingleBlockchainAccountData[ChecksumEvmAddress]],
+        self,
+        chain: SUPPORTED_EVM_CHAINS,
+        account_data: list[SingleBlockchainAccountData[ChecksumEvmAddress]],
     ) -> None:
         ...
 
     @overload
     def add_single_blockchain_accounts(
-            self,
-            chain: SUPPORTED_SUBSTRATE_CHAINS,
-            account_data: list[SingleBlockchainAccountData[SubstrateAddress]],
+        self,
+        chain: SUPPORTED_SUBSTRATE_CHAINS,
+        account_data: list[SingleBlockchainAccountData[SubstrateAddress]],
     ) -> None:
         ...
 
     @overload
     def add_single_blockchain_accounts(
-            self,
-            chain: SUPPORTED_BITCOIN_CHAINS,
-            account_data: list[SingleBlockchainAccountData[BTCAddress]],
+        self,
+        chain: SUPPORTED_BITCOIN_CHAINS,
+        account_data: list[SingleBlockchainAccountData[BTCAddress]],
     ) -> None:
         ...
 
     @overload
     def add_single_blockchain_accounts(
-            self,
-            chain: SupportedBlockchain,
-            account_data: list[SingleBlockchainAccountData],
+        self,
+        chain: SupportedBlockchain,
+        account_data: list[SingleBlockchainAccountData],
     ) -> None:
         ...
 
     def add_single_blockchain_accounts(
-            self,
-            chain: SupportedBlockchain,
-            account_data: list[SingleBlockchainAccountData],
+        self,
+        chain: SupportedBlockchain,
+        account_data: list[SingleBlockchainAccountData],
     ) -> None:
         """Adds new blockchain accounts
 
@@ -673,31 +727,33 @@ class Rotkehlchen():
           there is a problem with its query.
         """
         if len(account_data) == 0:
-            raise InputError('Empty list of blockchain accounts to add was given')
+            raise InputError("Empty list of blockchain accounts to add was given")
 
         with self.data.db.conn.read_ctx() as cursor:
             self.data.db.ensure_tags_exist(
                 cursor=cursor,
                 given_data=account_data,
-                action='adding',
-                data_type='blockchain accounts',
+                action="adding",
+                data_type="blockchain accounts",
             )
         self.chains_aggregator.modify_blockchain_accounts(
             blockchain=chain,
             accounts=[entry.address for entry in account_data],
-            append_or_remove='append',
+            append_or_remove="append",
         )
         with self.data.db.user_write() as write_cursor:
             self.data.db.add_blockchain_accounts(
                 write_cursor=write_cursor,
-                account_data=[x.to_blockchain_account_data(chain) for x in account_data],
+                account_data=[
+                    x.to_blockchain_account_data(chain) for x in account_data
+                ],
             )
 
     def edit_single_blockchain_accounts(
-            self,
-            write_cursor: 'DBCursor',
-            blockchain: SupportedBlockchain,
-            account_data: list[SingleBlockchainAccountData],
+        self,
+        write_cursor: "DBCursor",
+        blockchain: SupportedBlockchain,
+        account_data: list[SingleBlockchainAccountData],
     ) -> None:
         """Edits blockchain accounts data for a single chain
 
@@ -708,31 +764,35 @@ class Rotkehlchen():
         """
         # First check for validity of account data addresses
         if len(account_data) == 0:
-            raise InputError('Empty list of blockchain account data to edit was given')
+            raise InputError("Empty list of blockchain account data to edit was given")
         accounts = [x.address for x in account_data]
-        unknown_accounts = set(accounts).difference(self.chains_aggregator.accounts.get(blockchain))  # noqa: E501
+        unknown_accounts = set(accounts).difference(
+            self.chains_aggregator.accounts.get(blockchain)
+        )  # noqa: E501
         if len(unknown_accounts) != 0:
             raise InputError(
-                f'Tried to edit unknown {blockchain.value} '
+                f"Tried to edit unknown {blockchain.value} "
                 f'accounts {",".join(unknown_accounts)}',
             )
 
         self.data.db.ensure_tags_exist(
             cursor=write_cursor,
             given_data=account_data,
-            action='editing',
-            data_type='blockchain accounts',
+            action="editing",
+            data_type="blockchain accounts",
         )
         # Finally edit the accounts
         self.data.db.edit_blockchain_accounts(
             write_cursor=write_cursor,
-            account_data=[x.to_blockchain_account_data(blockchain) for x in account_data],
+            account_data=[
+                x.to_blockchain_account_data(blockchain) for x in account_data
+            ],
         )
 
     def remove_single_blockchain_accounts(
-            self,
-            blockchain: SupportedBlockchain,
-            accounts: ListOfBlockchainAddresses,
+        self,
+        blockchain: SupportedBlockchain,
+        accounts: ListOfBlockchainAddresses,
     ) -> None:
         """Removes blockchain accounts
 
@@ -747,25 +807,35 @@ class Rotkehlchen():
         )
         with contextlib.ExitStack() as stack:
             if blockchain in EVM_CHAINS_WITH_TRANSACTIONS:
-                blockchain = cast(EVM_CHAINS_WITH_TRANSACTIONS_TYPE, blockchain)  # by default mypy doesn't narrow the type  # noqa: E501
+                blockchain = cast(
+                    EVM_CHAINS_WITH_TRANSACTIONS_TYPE, blockchain
+                )  # by default mypy doesn't narrow the type  # noqa: E501
                 evm_manager = self.chains_aggregator.get_chain_manager(blockchain)
-                evm_addresses: list[ChecksumEvmAddress] = cast(list[ChecksumEvmAddress], accounts)
+                evm_addresses: list[ChecksumEvmAddress] = cast(
+                    list[ChecksumEvmAddress], accounts
+                )
                 self.maybe_kill_running_tx_query_tasks(blockchain, evm_addresses)
-                stack.enter_context(evm_manager.transactions.wait_until_no_query_for(evm_addresses))  # noqa: E501
+                stack.enter_context(
+                    evm_manager.transactions.wait_until_no_query_for(evm_addresses)
+                )  # noqa: E501
                 stack.enter_context(evm_manager.transactions.missing_receipts_lock)
-                stack.enter_context(evm_manager.transactions_decoder.undecoded_tx_query_lock)
+                stack.enter_context(
+                    evm_manager.transactions_decoder.undecoded_tx_query_lock
+                )
             write_cursor = stack.enter_context(self.data.db.user_write())
-            self.data.db.remove_single_blockchain_accounts(write_cursor, blockchain, accounts)
+            self.data.db.remove_single_blockchain_accounts(
+                write_cursor, blockchain, accounts
+            )
 
     def get_history_query_status(self) -> dict[str, str]:
-        if self.events_historian.progress < FVal('100'):
+        if self.events_historian.progress < FVal("100"):
             processing_state = self.events_historian.processing_state_name
             progress = self.events_historian.progress / 2
         elif self.accountant.first_processed_timestamp == -1:
-            processing_state = 'Processing all retrieved historical events'
+            processing_state = "Processing all retrieved historical events"
             progress = FVal(50)
         else:
-            processing_state = 'Processing all retrieved historical events'
+            processing_state = "Processing all retrieved historical events"
             # start_ts is min of the query start or the first action timestamp since action
             # processing can start well before query start to calculate cost basis
             start_ts = min(
@@ -774,15 +844,20 @@ class Rotkehlchen():
             )
             diff = self.accountant.query_end_ts - start_ts
             progress = 50 + 100 * (
-                FVal(self.accountant.currently_processing_timestamp - start_ts) /
-                FVal(diff) / 2)
+                FVal(self.accountant.currently_processing_timestamp - start_ts)
+                / FVal(diff)
+                / 2
+            )
 
-        return {'processing_state': str(processing_state), 'total_progress': str(progress)}
+        return {
+            "processing_state": str(processing_state),
+            "total_progress": str(progress),
+        }
 
     def process_history(
-            self,
-            start_ts: Timestamp,
-            end_ts: Timestamp,
+        self,
+        start_ts: Timestamp,
+        end_ts: Timestamp,
     ) -> tuple[int, str]:
         error_or_empty, events = self.events_historian.get_history(
             start_ts=start_ts,
@@ -797,11 +872,11 @@ class Rotkehlchen():
         return report_id, error_or_empty
 
     def query_balances(
-            self,
-            requested_save_data: bool = False,
-            save_despite_errors: bool = False,
-            timestamp: Optional[Timestamp] = None,
-            ignore_cache: bool = False,
+        self,
+        requested_save_data: bool = False,
+        save_despite_errors: bool = False,
+        timestamp: Optional[Timestamp] = None,
+        ignore_cache: bool = False,
     ) -> dict[str, Any]:
         """Query all balances rotkehlchen can see.
 
@@ -818,7 +893,7 @@ class Rotkehlchen():
         Returns a dictionary with the queried balances.
         """
         log.info(
-            'query_balances called',
+            "query_balances called",
             requested_save_data=requested_save_data,
             save_despite_errors=save_despite_errors,
         )
@@ -826,13 +901,15 @@ class Rotkehlchen():
         balances: dict[str, dict[Asset, Balance]] = {}
         problem_free = True
         for exchange in self.exchange_manager.iterate_exchanges():
-            exchange_balances, error_msg = exchange.query_balances(ignore_cache=ignore_cache)
+            exchange_balances, error_msg = exchange.query_balances(
+                ignore_cache=ignore_cache
+            )
             # If we got an error, disregard that exchange but make sure we don't save data
             if not isinstance(exchange_balances, dict):
                 problem_free = False
                 self.msg_aggregator.add_message(
                     message_type=WSMessageType.BALANCE_SNAPSHOT_ERROR,
-                    data={'location': exchange.name, 'error': error_msg},
+                    data={"location": exchange.name, "error": error_msg},
                 )
             else:
                 location_str = str(exchange.location)
@@ -859,10 +936,10 @@ class Rotkehlchen():
         except (RemoteError, EthSyncError) as e:
             problem_free = False
             liabilities = {}
-            log.error(f'Querying blockchain balances failed due to: {str(e)}')
+            log.error(f"Querying blockchain balances failed due to: {str(e)}")
             self.msg_aggregator.add_message(
                 message_type=WSMessageType.BALANCE_SNAPSHOT_ERROR,
-                data={'location': 'blockchain balances query', 'error': str(e)},
+                data={"location": "blockchain balances query", "error": str(e)},
             )
 
         manually_tracked_liabilities = get_manually_tracked_balances(
@@ -875,28 +952,32 @@ class Rotkehlchen():
 
         liabilities = combine_dicts(liabilities, manual_liabilities_as_dict)
         # retrieve loopring balances if module is activated
-        if self.chains_aggregator.get_module('loopring'):
+        if self.chains_aggregator.get_module("loopring"):
             try:
                 loopring_balances = self.chains_aggregator.get_loopring_balances()
             except RemoteError as e:
                 problem_free = False
                 self.msg_aggregator.add_message(
                     message_type=WSMessageType.BALANCE_SNAPSHOT_ERROR,
-                    data={'location': 'loopring', 'error': str(e)},
+                    data={"location": "loopring", "error": str(e)},
                 )
             else:
                 if len(loopring_balances) != 0:
                     balances[str(Location.LOOPRING)] = loopring_balances
 
         # retrieve nft balances if module is activated
-        nfts = self.chains_aggregator.get_module('nfts')
+        nfts = self.chains_aggregator.get_module("nfts")
         if nfts is not None:
             try:
-                nft_mapping = nfts.get_db_nft_balances(filter_query=NFTFilterQuery.make())['entries']  # noqa: E501
+                nft_mapping = nfts.get_db_nft_balances(
+                    filter_query=NFTFilterQuery.make()
+                )[
+                    "entries"
+                ]  # noqa: E501
             except RemoteError as e:
                 log.error(
-                    f'At balance snapshot NFT balances query failed due to {str(e)}. Error '
-                    f'is ignored and balance snapshot will still be saved.',
+                    f"At balance snapshot NFT balances query failed due to {str(e)}. Error "
+                    f"is ignored and balance snapshot will still be saved.",
                 )
             else:
                 if len(nft_mapping) != 0:
@@ -905,15 +986,18 @@ class Rotkehlchen():
 
                     for nft_balances in nft_mapping.values():
                         for balance_entry in nft_balances:
-                            if balance_entry['usd_price'] == ZERO:
+                            if balance_entry["usd_price"] == ZERO:
                                 continue
-                            balances[str(Location.BLOCKCHAIN)][CryptoAsset(
-                                balance_entry['id'])] = Balance(
+                            balances[str(Location.BLOCKCHAIN)][
+                                CryptoAsset(balance_entry["id"])
+                            ] = Balance(
                                 amount=ONE,
-                                usd_value=balance_entry['usd_price'],
+                                usd_value=balance_entry["usd_price"],
                             )
 
-        balances = account_for_manually_tracked_asset_balances(db=self.data.db, balances=balances)
+        balances = account_for_manually_tracked_asset_balances(
+            db=self.data.db, balances=balances
+        )
 
         # Calculate usd totals
         assets_total_balance: DefaultDict[Asset, Balance] = defaultdict(Balance)
@@ -924,8 +1008,12 @@ class Rotkehlchen():
                 assets_total_balance[asset] += balance
                 total_usd_per_location[location] += balance.usd_value
 
-        net_usd = sum((balance.usd_value for _, balance in assets_total_balance.items()), ZERO)
-        liabilities_total_usd = sum((liability.usd_value for _, liability in liabilities.items()), ZERO)  # noqa: E501
+        net_usd = sum(
+            (balance.usd_value for _, balance in assets_total_balance.items()), ZERO
+        )
+        liabilities_total_usd = sum(
+            (liability.usd_value for _, liability in liabilities.items()), ZERO
+        )  # noqa: E501
         net_usd -= liabilities_total_usd
 
         # Calculate location stats
@@ -934,10 +1022,12 @@ class Rotkehlchen():
             if location == str(Location.BLOCKCHAIN):
                 total_usd -= liabilities_total_usd
 
-            percentage = (total_usd / net_usd).to_percentage() if net_usd != ZERO else '0%'
+            percentage = (
+                (total_usd / net_usd).to_percentage() if net_usd != ZERO else "0%"
+            )
             location_stats[location] = {
-                'usd_value': total_usd,
-                'percentage_of_net_value': percentage,
+                "usd_value": total_usd,
+                "percentage_of_net_value": percentage,
             }
 
         # Calculate 'percentage_of_net_value' per asset
@@ -948,22 +1038,32 @@ class Rotkehlchen():
             asset: balance.to_dict() for asset, balance in liabilities.items()
         }
         for asset, balance_dict in assets_total_balance_as_dict.items():
-            percentage = (balance_dict['usd_value'] / net_usd).to_percentage() if net_usd != ZERO else '0%'  # noqa: E501
-            assets_total_balance_as_dict[asset]['percentage_of_net_value'] = percentage
+            percentage = (
+                (balance_dict["usd_value"] / net_usd).to_percentage()
+                if net_usd != ZERO
+                else "0%"
+            )  # noqa: E501
+            assets_total_balance_as_dict[asset]["percentage_of_net_value"] = percentage
 
         for asset, balance_dict in liabilities_as_dict.items():
-            percentage = (balance_dict['usd_value'] / net_usd).to_percentage() if net_usd != ZERO else '0%'  # noqa: E501
-            liabilities_as_dict[asset]['percentage_of_net_value'] = percentage
+            percentage = (
+                (balance_dict["usd_value"] / net_usd).to_percentage()
+                if net_usd != ZERO
+                else "0%"
+            )  # noqa: E501
+            liabilities_as_dict[asset]["percentage_of_net_value"] = percentage
 
         # Compose balances response
         result_dict = {
-            'assets': assets_total_balance_as_dict,
-            'liabilities': liabilities_as_dict,
-            'location': location_stats,
-            'net_usd': net_usd,
+            "assets": assets_total_balance_as_dict,
+            "liabilities": liabilities_as_dict,
+            "location": location_stats,
+            "net_usd": net_usd,
         }
         with self.data.db.conn.read_ctx() as cursor:
-            allowed_to_save = requested_save_data or self.data.db.should_save_balances(cursor)
+            allowed_to_save = requested_save_data or self.data.db.should_save_balances(
+                cursor
+            )
             if (problem_free or save_despite_errors) and allowed_to_save:
                 if not timestamp:
                     timestamp = Timestamp(int(time.time()))
@@ -973,10 +1073,10 @@ class Rotkehlchen():
                         data=result_dict,
                         timestamp=timestamp,
                     )
-                log.debug('query_balances data saved')
+                log.debug("query_balances data saved")
             else:
                 log.debug(
-                    'query_balances data not saved',
+                    "query_balances data not saved",
                     allowed_to_save=allowed_to_save,
                     problem_free=problem_free,
                     save_despite_errors=save_despite_errors,
@@ -987,17 +1087,23 @@ class Rotkehlchen():
     def set_settings(self, settings: ModifiableDBSettings) -> tuple[bool, str]:
         """Tries to set new settings. Returns True in success or False with message if error"""
         if settings.ksm_rpc_endpoint is not None:
-            result, msg = self.chains_aggregator.set_ksm_rpc_endpoint(settings.ksm_rpc_endpoint)
+            result, msg = self.chains_aggregator.set_ksm_rpc_endpoint(
+                settings.ksm_rpc_endpoint
+            )
             if not result:
                 return False, msg
 
         if settings.dot_rpc_endpoint is not None:
-            result, msg = self.chains_aggregator.set_dot_rpc_endpoint(settings.dot_rpc_endpoint)
+            result, msg = self.chains_aggregator.set_dot_rpc_endpoint(
+                settings.dot_rpc_endpoint
+            )
             if not result:
                 return False, msg
 
         if settings.btc_derivation_gap_limit is not None:
-            self.chains_aggregator.btc_derivation_gap_limit = settings.btc_derivation_gap_limit
+            self.chains_aggregator.btc_derivation_gap_limit = (
+                settings.btc_derivation_gap_limit
+            )
 
         if settings.current_price_oracles is not None:
             Inquirer().set_oracles_order(settings.current_price_oracles)
@@ -1010,22 +1116,22 @@ class Rotkehlchen():
 
         with self.data.db.user_write() as cursor:
             self.data.db.set_settings(cursor, settings)
-        return True, ''
+        return True, ""
 
-    def get_settings(self, cursor: 'DBCursor') -> DBSettings:
+    def get_settings(self, cursor: "DBCursor") -> DBSettings:
         """Returns the db settings with a check whether premium is active or not"""
         return self.data.db.get_settings(cursor, have_premium=self.premium is not None)
 
     def setup_exchange(
-            self,
-            name: str,
-            location: Location,
-            api_key: ApiKey,
-            api_secret: ApiSecret,
-            passphrase: Optional[str] = None,
-            kraken_account_type: Optional['KrakenAccountType'] = None,
-            binance_selected_trade_pairs: Optional[list[str]] = None,
-            ftx_subaccount: Optional[str] = None,
+        self,
+        name: str,
+        location: Location,
+        api_key: ApiKey,
+        api_secret: ApiSecret,
+        passphrase: Optional[str] = None,
+        kraken_account_type: Optional["KrakenAccountType"] = None,
+        binance_selected_trade_pairs: Optional[list[str]] = None,
+        ftx_subaccount: Optional[str] = None,
     ) -> tuple[bool, str]:
         """
         Setup a new exchange with an api key and an api secret and optionally a passphrase
@@ -1057,16 +1163,20 @@ class Rotkehlchen():
 
     def remove_exchange(self, name: str, location: Location) -> tuple[bool, str]:
         if self.exchange_manager.get_exchange(name=name, location=location) is None:
-            return False, f'{str(location)} exchange {name} is not registered'
+            return False, f"{str(location)} exchange {name} is not registered"
 
         self.exchange_manager.delete_exchange(name=name, location=location)
         # Success, remove it also from the DB
         with self.data.db.user_write() as write_cursor:
-            self.data.db.remove_exchange(write_cursor=write_cursor, name=name, location=location)
+            self.data.db.remove_exchange(
+                write_cursor=write_cursor, name=name, location=location
+            )
             if self.exchange_manager.connected_exchanges.get(location) is None:
                 # was last exchange of the location type. Delete used query ranges
-                self.data.db.delete_used_query_range_for_exchange(write_cursor=write_cursor, location=location)  # noqa: E501
-        return True, ''
+                self.data.db.delete_used_query_range_for_exchange(
+                    write_cursor=write_cursor, location=location
+                )  # noqa: E501
+        return True, ""
 
     def query_periodic_data(self) -> dict[str, Union[bool, list[str], Timestamp]]:
         """Query for frequently changing data"""
@@ -1074,10 +1184,20 @@ class Rotkehlchen():
 
         if self.user_is_logged_in:
             with self.data.db.conn.read_ctx() as cursor:
-                result['last_balance_save'] = self.data.db.get_last_balance_save_time(cursor)
-                result['connected_eth_nodes'] = [node.name for node in self.chains_aggregator.ethereum.node_inquirer.get_connected_nodes()]  # noqa: E501
-                result['connected_optimism_nodes'] = [node.name for node in self.chains_aggregator.optimism.node_inquirer.get_connected_nodes()]  # noqa: E501
-                result['last_data_upload_ts'] = Timestamp(self.premium_sync_manager.last_data_upload_ts)  # noqa: E501
+                result["last_balance_save"] = self.data.db.get_last_balance_save_time(
+                    cursor
+                )
+                result["connected_eth_nodes"] = [
+                    node.name
+                    for node in self.chains_aggregator.ethereum.node_inquirer.get_connected_nodes()
+                ]  # noqa: E501
+                result["connected_optimism_nodes"] = [
+                    node.name
+                    for node in self.chains_aggregator.optimism.node_inquirer.get_connected_nodes()
+                ]  # noqa: E501
+                result["last_data_upload_ts"] = Timestamp(
+                    self.premium_sync_manager.last_data_upload_ts
+                )  # noqa: E501
         return result
 
     def shutdown(self) -> None:
@@ -1085,11 +1205,11 @@ class Rotkehlchen():
         self.shutdown_event.set()
 
     def create_oracle_cache(
-            self,
-            oracle: HistoricalPriceOracle,
-            from_asset: AssetWithOracles,
-            to_asset: AssetWithOracles,
-            purge_old: bool,
+        self,
+        oracle: HistoricalPriceOracle,
+        from_asset: AssetWithOracles,
+        to_asset: AssetWithOracles,
+        purge_old: bool,
     ) -> None:
         """Creates the cache of the given asset pair from the start of time
         until now for the given oracle.
@@ -1103,7 +1223,9 @@ class Rotkehlchen():
         if oracle != HistoricalPriceOracle.CRYPTOCOMPARE:
             return  # only for cryptocompare for now
 
-        with contextlib.suppress(UnknownAsset):  # if suppress -> assets are not crypto or fiat, so we can't query cryptocompare  # noqa: E501
+        with contextlib.suppress(
+            UnknownAsset
+        ):  # if suppress -> assets are not crypto or fiat, so we can't query cryptocompare  # noqa: E501
             self.cryptocompare.create_cache(
                 from_asset=from_asset,
                 to_asset=to_asset,
